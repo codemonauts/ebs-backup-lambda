@@ -4,7 +4,7 @@ import boto3
 import configparser
 import datetime
 
-config = ConfigParser.RawConfigParser()
+config = configparser.RawConfigParser()
 config.read('./vars.ini')
 
 print('Loading Backup function')
