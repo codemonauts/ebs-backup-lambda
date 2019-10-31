@@ -1,9 +1,8 @@
+#! /usr/bin/env python3
+
 import boto3
-import ConfigParser
-import botocore
+import configparser
 import datetime
-import re
-import collections
 
 config = ConfigParser.RawConfigParser()
 config.read('./vars.ini')
@@ -18,7 +17,7 @@ def lambda_handler(event, context):
     retention_days = config.getint('main', 'RETENTION_DAYS')
     for r in regionsList:
         aws_region = r
-        print("Checking Region %s" % aws_region)
+        print("Checking Region {}".format(aws_region))
         account = event['account']
         ec = boto3.client('ec2', region_name=aws_region)
         reservations = ec.describe_instances(
@@ -28,8 +27,7 @@ def lambda_handler(event, context):
         )['Reservations']
         instances = sum(
             [
-                [i for i in r['Instances']]
-                for r in reservations
+                [i for i in r['Instances']] for r in reservations
             ], [])
 
         for instance in instances:
@@ -44,12 +42,12 @@ def lambda_handler(event, context):
                 for tags in instance['Tags']:
                     if tags["Key"] == 'Name':
                         instance_name = tags["Value"]
-                print("Found EBS Volume %s on Instance %s, creating Snapshot" % (vol_id, instance['InstanceId']))
+                print("Found EBS Volume {} on Instance {}, creating Snapshot".format(vol_id, instance['InstanceId']))
                 snap = ec.create_snapshot(
-                    Description="Snapshot of Instance %s (%s) %s" % ( instance_id, instance_name, dev['DeviceName']),
+                    Description="Snapshot of Instance {} ({}) {}".format(instance_id, instance_name, dev['DeviceName']),
                     VolumeId=vol_id,
                 )
-                snapshot = "%s_%s" % (snap['Description'], str(datetime.date.today()))
+                snapshot = "{}_{}".format(snap['Description'], str(datetime.date.today()))
                 delete_date = datetime.date.today() + datetime.timedelta(days=retention_days)
                 delete_fmt = delete_date.strftime('%Y-%m-%d')
                 ec.create_tags(
@@ -68,7 +66,7 @@ def lambda_handler(event, context):
             {'Name': 'tag-key', 'Values': ['DeleteOn']},
             {'Name': 'tag-value', 'Values': [delete_on]},
         ]
-        snapshot_response = ec.describe_snapshots(OwnerIds=['%s' % account], Filters=filters)
+        snapshot_response = ec.describe_snapshots(OwnerIds=[account], Filters=filters)
         for snap in snapshot_response['Snapshots']:
-            print "Deleting snapshot %s" % snap['SnapshotId']
+            print("Deleting snapshot {}".format(snap['SnapshotId']))
             ec.delete_snapshot(SnapshotId=snap['SnapshotId'])
