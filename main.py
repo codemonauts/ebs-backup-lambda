@@ -2,71 +2,78 @@
 
 import boto3
 import configparser
-import datetime
+from datetime import date, timedelta
 
 config = configparser.RawConfigParser()
-config.read('./vars.ini')
+config.read("./vars.ini")
 
-print('Loading Backup function')
+
+def find_instance_name(instance):
+    for tags in instance["Tags"]:
+        if tags["Key"] == "Name":
+            return tags["Value"]
+    return ""
 
 
 def lambda_handler(event, context):
-    regionsStrg = config.get('regions', 'regionList')
-    regionsList = regionsStrg.split(',')
-    EC2_INSTANCE_TAG = config.get('main', 'EC2_INSTANCE_TAG')
-    retention_days = config.getint('main', 'RETENTION_DAYS')
-    for r in regionsList:
-        aws_region = r
-        print("Checking Region {}".format(aws_region))
-        account = event['account']
-        ec = boto3.client('ec2', region_name=aws_region)
+    regions = config.get("regions", "regionList").split(",")
+    backup_tag = config.get("main", "EC2_INSTANCE_TAG")
+    retention_days = config.getint("main", "RETENTION_DAYS")
+    account = event["account"]
+    today = date.today()
+
+    for region in regions:
+        ec = boto3.client("ec2", region_name=region)
         reservations = ec.describe_instances(
             Filters=[
-                {'Name': 'tag-value', 'Values': [EC2_INSTANCE_TAG]},
+                {"Name": "tag-key", "Values": [backup_tag]},
             ]
-        )['Reservations']
-        instances = sum(
-            [
-                [i for i in r['Instances']] for r in reservations
-            ], [])
+        )["Reservations"]
+        instances = sum([[i for i in r["Instances"]] for r in reservations], [])
 
         for instance in instances:
-            for dev in instance['BlockDeviceMappings']:
-                if dev.get('Ebs', None) is None:
+            for device in instance["BlockDeviceMappings"]:
+                if not device.get("Ebs"):
                     # skip non EBS volumes
                     continue
 
-                vol_id = dev['Ebs']['VolumeId']
-                instance_id = instance['InstanceId']
-                instance_name = ''
-                for tags in instance['Tags']:
-                    if tags["Key"] == 'Name':
-                        instance_name = tags["Value"]
-                print("Found EBS Volume {} on Instance {}, creating Snapshot".format(vol_id, instance['InstanceId']))
+                vol_id = device["Ebs"]["VolumeId"]
+                instance_id = instance["InstanceId"]
+                instance_name = find_instance_name(instance)
+                print(f"Found EBS Volume {vol_id} on Instance {instance['InstanceId']}")
+
+                snapshot_name = f"{vol_id}_{date.strftime('%Y-%m-%d')}"
+                delete_date = date.today() + timedelta(days=retention_days)
+
                 snap = ec.create_snapshot(
-                    Description="Snapshot of Instance {} ({}) {}".format(instance_id, instance_name, dev['DeviceName']),
+                    Description=f"Snapshot of {device['DeviceName']} from {instance_id} ({instance_name})",
                     VolumeId=vol_id,
-                )
-                snapshot = "{}_{}".format(snap['Description'], str(datetime.date.today()))
-                delete_date = datetime.date.today() + datetime.timedelta(days=retention_days)
-                delete_fmt = delete_date.strftime('%Y-%m-%d')
-                ec.create_tags(
-                    Resources=[snap['SnapshotId']],
-                    Tags=[
-                        {'Key': 'DeleteOn', 'Value': delete_fmt},
-                        {'Key': 'Name', 'Value': snapshot},
-                        {'Key': 'InstanceId', 'Value': instance_id},
-                        {'Key': 'InstanceName', 'Value': instance_name},
-                        {'Key': 'DeviceName', 'Value': dev['DeviceName']}
-                    ]
+                    TagSpecifications=[
+                        {
+                            "ResourceType": "snapshot",
+                            "Tags": [
+                                {
+                                    "Key": "DeleteOn",
+                                    "Value": delete_date.strftime("%Y-%m-%d"),
+                                },
+                                {
+                                    "Key": "Name",
+                                    "Value": snapshot_name,
+                                },
+                                {
+                                    "Key": "DeviceName",
+                                    "Value": device["DeviceName"],
+                                },
+                            ],
+                        },
+                    ],
                 )
 
-        delete_on = datetime.date.today().strftime('%Y-%m-%d')
         filters = [
-            {'Name': 'tag-key', 'Values': ['DeleteOn']},
-            {'Name': 'tag-value', 'Values': [delete_on]},
+            {"Name": "tag-key", "Values": ["DeleteOn"]},
+            {"Name": "tag-value", "Values": [today.strftime("%Y-%m-%d")]},
         ]
         snapshot_response = ec.describe_snapshots(OwnerIds=[account], Filters=filters)
-        for snap in snapshot_response['Snapshots']:
-            print("Deleting snapshot {}".format(snap['SnapshotId']))
-            ec.delete_snapshot(SnapshotId=snap['SnapshotId'])
+        for snap in snapshot_response["Snapshots"]:
+            print(f"Deleting snapshot {snap['SnapshotId']}")
+            ec.delete_snapshot(SnapshotId=snap["SnapshotId"])
